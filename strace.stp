@@ -3,22 +3,190 @@
 # suppress some run-time errors here for cleaner output
 //bin/true && exec stap --suppress-handler-errors --skip-badvars $0 ${1+"$@"}
 
+/*
+ * Compile:
+ * stap -p4 -DSTP_NO_OVERLOAD -m strace
+ * Run:
+ * /usr/bin/staprun -R -c "/sbin/wpa_supplicant -u -O /run/wpa_supplicant -c /etc/wpa_supplicant.conf -i wlan0" -w /root/strace.ko only_capability_use=1 timestamp=0
+ */
 
 /* configuration options; set these with stap -G */
 global follow_fork = 0   /* -Gfollow_fork=1 means trace descendant processes too */
 global timestamp = 1     /* -Gtimestamp=0 means don't print a syscall timestamp */
 global elapsed_time = 0  /* -Gelapsed_time=1 means print a syscall duration too */
+global only_capability_use = 0 /* -Gonly_capability_use=1 means print only when capabilities are used */
+global inaccessible_candidates = "/bin /boot /dev /dev/hugepages /dev/mqueue /dev/pts /dev/shm /home /lost+found /media /mnt /opt /proc /proc/bus /proc/sys /root /sbin /srv /sys /sys/fs /usr/bin /usr/sbin /tmp /var /var/tmp"
 
 global thread_argstr%
 global thread_time%
 
 global syscalls_nonreturn[2]
+global capnames[64]
+global used_caps
+global missing_caps
+global all_used_caps
+global all_missing_caps
+global accessed_devices[1000]
+global all_accessed_devices[1000]
+global highwatermark_fsize
+global highwatermark_data
+global highwatermark_stack
+global highwatermark_core
+global highwatermark_nproc
+global highwatermark_nofile
+global highwatermark_memlock
+global highwatermark_as
+global highwatermark_sigpending
+global highwatermark_msgqueue
+global highwatermark_nice
+global highwatermark_rtprio
+global old_highwatermark_fsize
+global old_highwatermark_data
+global old_highwatermark_stack
+global old_highwatermark_core
+global old_highwatermark_nproc
+global old_highwatermark_nofile
+global old_highwatermark_memlock
+global old_highwatermark_as
+global old_highwatermark_sigpending
+global old_highwatermark_msgqueue
+global old_highwatermark_nice
+global old_highwatermark_rtprio
+global afnames%
+global used_afs
+global missing_afs
+global all_used_afs
+global all_missing_afs
+global no_memory_deny_write_execute
+global all_memory_deny_write_execute = "true"
+global used_syscalls%
+global syscalls_for_seccomp%
+global accessed_paths%
+global all_accessed_paths%
+global written_paths%
+global all_written_paths%
+global inaccessibles%
+global protect_system_paths%
+global protect_system = "full"
+global protect_home_paths%
+global protect_home = "true"
+global print_syscall
+
+
 probe begin 
   {
     /* list those syscalls that never .return */
     syscalls_nonreturn["exit"]=1
     syscalls_nonreturn["exit_group"]=1
-  }
+
+    // egrep '#define CAP_.*[0-9]+$' /usr/src/linux-headers*/include/uapi/linux/capability.h | awk '{ print "capnames[" $3 "] = \"" $2 "\";" }'
+    capnames[0] = "CAP_CHOWN";
+    capnames[1] = "CAP_DAC_OVERRIDE";
+    capnames[2] = "CAP_DAC_READ_SEARCH";
+    capnames[3] = "CAP_FOWNER";
+    capnames[4] = "CAP_FSETID";
+    capnames[5] = "CAP_KILL";
+    capnames[6] = "CAP_SETGID";
+    capnames[7] = "CAP_SETUID";
+    capnames[8] = "CAP_SETPCAP";
+    capnames[9] = "CAP_LINUX_IMMUTABLE";
+    capnames[10] = "CAP_NET_BIND_SERVICE";
+    capnames[11] = "CAP_NET_BROADCAST";
+    capnames[12] = "CAP_NET_ADMIN";
+    capnames[13] = "CAP_NET_RAW";
+    capnames[14] = "CAP_IPC_LOCK";
+    capnames[15] = "CAP_IPC_OWNER";
+    capnames[16] = "CAP_SYS_MODULE";
+    capnames[17] = "CAP_SYS_RAWIO";
+    capnames[18] = "CAP_SYS_CHROOT";
+    capnames[19] = "CAP_SYS_PTRACE";
+    capnames[20] = "CAP_SYS_PACCT";
+    capnames[21] = "CAP_SYS_ADMIN";
+    capnames[22] = "CAP_SYS_BOOT";
+    capnames[23] = "CAP_SYS_NICE";
+    capnames[24] = "CAP_SYS_RESOURCE";
+    capnames[25] = "CAP_SYS_TIME";
+    capnames[26] = "CAP_SYS_TTY_CONFIG";
+    capnames[27] = "CAP_MKNOD";
+    capnames[28] = "CAP_LEASE";
+    capnames[29] = "CAP_AUDIT_WRITE";
+    capnames[30] = "CAP_AUDIT_CONTROL";
+    capnames[31] = "CAP_SETFCAP";
+    capnames[32] = "CAP_MAC_OVERRIDE";
+    capnames[33] = "CAP_MAC_ADMIN";
+    capnames[34] = "CAP_SYSLOG";
+    capnames[35] = "CAP_WAKE_ALARM";
+    capnames[36] = "CAP_BLOCK_SUSPEND";
+    capnames[37] = "CAP_AUDIT_READ";
+
+    //egrep '#define AF_.*' /usr/src/linux-headers-*/include/linux/socket.h | awk '{ print "afnames[" $3 "] = \"" $2 "\"" }'
+    afnames[0] = "AF_UNSPEC"
+    afnames[1] = "AF_UNIX"
+    afnames[2] = "AF_INET"
+    afnames[3] = "AF_AX25"
+    afnames[4] = "AF_IPX"
+    afnames[5] = "AF_APPLETALK"
+    afnames[6] = "AF_NETROM"
+    afnames[7] = "AF_BRIDGE"
+    afnames[8] = "AF_ATMPVC"
+    afnames[9] = "AF_X25"
+    afnames[10] = "AF_INET6"
+    afnames[11] = "AF_ROSE"
+    afnames[12] = "AF_DECnet"
+    afnames[13] = "AF_NETBEUI"
+    afnames[14] = "AF_SECURITY"
+    afnames[15] = "AF_KEY"
+    afnames[16] = "AF_NETLINK"
+    afnames[17] = "AF_PACKET"
+    afnames[18] = "AF_ASH"
+    afnames[19] = "AF_ECONET"
+    afnames[20] = "AF_ATMSVC"
+    afnames[21] = "AF_RDS"
+    afnames[22] = "AF_SNA"
+    afnames[23] = "AF_IRDA"
+    afnames[24] = "AF_PPPOX"
+    afnames[25] = "AF_WANPIPE"
+    afnames[26] = "AF_LLC"
+    afnames[27] = "AF_IB"
+    afnames[28] = "AF_MPLS"
+    afnames[29] = "AF_CAN"
+    afnames[30] = "AF_TIPC"
+    afnames[31] = "AF_BLUETOOTH"
+    afnames[32] = "AF_IUCV"
+    afnames[33] = "AF_RXRPC"
+    afnames[34] = "AF_ISDN"
+    afnames[35] = "AF_PHONET"
+    afnames[36] = "AF_IEEE802154"
+    afnames[37] = "AF_CAIF"
+    afnames[38] = "AF_ALG"
+    afnames[39] = "AF_NFC"
+    afnames[40] = "AF_VSOCK"
+    afnames[41] = "AF_KCM"
+
+    syscalls_for_seccomp["fstatat"] = "fstatat64"
+    syscalls_for_seccomp["mmap2"] = "mmap"
+    syscalls_for_seccomp["pread"] = "pread64"
+    syscalls_for_seccomp["pwrite"] = "pwrite64"
+
+    str = tokenize(inaccessible_candidates, " ")
+    while (str != "") {
+      inaccessibles[str] = 0
+      str = tokenize("", " ")
+    }
+
+    protect_system_paths["/boot"] = 1
+    protect_system_paths["/etc"] = 1
+    protect_system_paths["/usr"] = 1
+    # Additional ProtectSystem directories in Debian
+    protect_system_paths["/bin"] = 1
+    protect_system_paths["/lib"] = 1
+    protect_system_paths["/lib64"] = 1
+    protect_system_paths["/sbin"] = 1
+
+    protect_home_paths["/home"] = 1
+    protect_home_paths["/root"] = 1
+    protect_home_paths["/run/user"] = 1
+ }
 
 
 
@@ -30,12 +198,706 @@ function filter_p()
     return 0;
   }
 
+function caps_to_str(caps)
+  {
+    str = ""
+    for (i = 0; i < 37; i++) # CAP_LAST_CAP
+      if (caps & (1 << i)) {
+        str .= capnames[i]
+	if ((caps & ~((1 << (i + 1)) - 1)) != 0)
+	  str .= " "
+      }
+    return str
+  }
+
+function dev_to_str(type, dev, access)
+  {
+    devs = "/dev/"
+    if (type == 1) # DEV_BLOCK
+      devs .= "block"
+    else
+      devs .= "char"
+    devs .= sprintf("/%d:%d ", dev >> 32, dev & 0xffffffff)
+    if (access & 2) # ACC_READ
+      devs .= "r"
+    if (access & 4) # ACC_WRITE
+      devs .= "w"
+    if (access & 1) # ACC_MKNOD
+      devs .= "m"
+    return devs
+  }
+
+function afs_to_str(afs)
+  {
+    str = ""
+    for (i = 0; i < 42; i++) # MAX_AF
+      if (afs & (1 << i)) {
+        str .= afnames[i]
+	if ((afs & ~((1 << (i + 1)) - 1)) != 0)
+	  str .= " "
+      }
+    return str
+  }
+
+/* Capabilities */
+probe kernel.function("cap_capable@security/commoncap.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0 && $audit)
+      used_caps |= 1 << $cap;
+    else
+      missing_caps |= 1 << $cap;
+  }
+
+/* Devices */
+probe kernel.function("__devcgroup_check_permission@security/device_cgroup.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0)
+      accessed_devices[$type, $major << 32 | $minor] |= $access
+  }
+
+/* RLIMIT_FSIZE */
+probe kernel.function("inode_newsize_ok@fs/attr.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0 && highwatermark_fsize < $offset)
+      highwatermark_fsize = $offset
+  }
+
+/* RLIMIT_DATA */
+probe kernel.function("prctl_set_mm@kernel/sys.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0 && highwatermark_data < $prctl_map->end_data - $prctl_map->start_data) {
+      highwatermark_data = $prctl_map->end_data - $prctl_map->start_data
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("do_brk@mm/mmap.c").return
+  {
+    if (filter_p()) next;
+
+    task = task_current()
+    if ($return > 0 && highwatermark_data < task->mm->data_vm << 12) { # PAGE_SHIFT
+      highwatermark_data = task->mm->data_vm << 12
+      print_syscall = 1
+    }
+    if ($return > 0 && highwatermark_as < task->mm->total_vm << 12) {
+      highwatermark_as = task->mm->total_vm << 12
+      print_syscall = 1
+    }
+  }
+
+/* also RLIMIT_STACK and RLIMIT_MEMLOCK */
+probe kernel.function("vm_stat_account@mm/mmap.c").return
+  {
+    if (filter_p()) next;
+
+    if (highwatermark_data < $mm->data_vm << 12) { # PAGE_SHIFT
+      highwatermark_data = $mm->data_vm << 12
+      print_syscall = 1
+    }
+    if (highwatermark_stack < $mm->stack_vm << 12) {
+      highwatermark_stack = $mm->stack_vm << 12
+      print_syscall = 1
+    }
+    if (highwatermark_memlock < atomic_long_read(&$mm->locked_vm) << 12) {
+      highwatermark_memlock = atomic_long_read(&$mm->locked_vm) << 12
+      print_syscall = 1
+    }
+    if (highwatermark_as < $mm->total_vm << 12) {
+      highwatermark_as = $mm->total_vm << 12
+      print_syscall = 1
+    }
+  }
+
+/* RLIMIT_CORE */
+probe kernel.function("dump_emit@fs/coredump.c").return
+  {
+    if (filter_p()) next;
+
+    if (highwatermark_core < $cprm->written) {
+      highwatermark_core = $cprm->written
+      print_syscall = 1
+    }
+  }
+
+/* RLIMIT_NPROC */
+probe kernel.function("commit_creds@kernel/cred.c").return
+  {
+    if (filter_p()) next;
+
+    if (highwatermark_nproc < atomic_read(&$new->user->processes)) {
+      highwatermark_nproc = atomic_read(&$new->user->processes)
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("copy_process@kernel/fork.c").return
+  {
+    if (filter_p()) next;
+    printf("return %d\n", $return);
+    try {
+    if (($return > 0 || $return < -1000) && $return->real_cred && $return->real_cred->user)
+      printf("good return %d\n", $return);
+      if (highwatermark_nproc < atomic_read(&$return->real_cred->user->processes)) {
+	highwatermark_nproc = atomic_read(&$return->real_cred->user->processes)
+	print_syscall = 1
+      }
+    } catch {}
+  }
+
+/* RLIMIT_NOFILE */
+probe kernel.function("__alloc_fd@fs/file.c").return
+  {
+    if (filter_p()) next;
+
+    if (($return >= 0 || $return < -1000) && highwatermark_nofile < $return) {
+      highwatermark_nofile = $return
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("do_dup2@fs/file.c").return
+  {
+    if (filter_p()) next;
+
+    if (($return >= 0 || $return < -1000) && highwatermark_nofile < $return) {
+      highwatermark_nofile = $return
+      print_syscall = 1
+    }
+  }
+
+/* RLIMIT_MEMLOCK */
+probe kernel.function("sys_bpf@kernel/bpf/syscall.c").return
+  {
+    if (filter_p()) next;
+
+    task = task_current()
+    user = task->real_cred->user
+    if ($return == 0 && highwatermark_memlock < atomic_long_read(&user->locked_vm) << 12) { # PAGE_SHIFT
+      highwatermark_memlock = atomic_long_read(&user->locked_vm) << 12
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("perf_mmap@kernel/events/core.c").return
+  {
+    if (filter_p()) next;
+
+    task = task_current()
+    if ($return == 0 && highwatermark_memlock < task->mm->pinned_vm << 12) { # PAGE_SHIFT
+      highwatermark_memlock = task->mm->pinned_vm << 12
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("do_mlock@mm/mlock.c").return
+  {
+    if (filter_p()) next;
+
+    task = task_current()
+    if ($return == 0 && highwatermark_memlock < task->mm->locked_vm << 12) { # PAGE_SHIFT
+      highwatermark_memlock = task->mm->locked_vm << 12
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("sys_mlockall@mm/mlock.c").return
+  {
+    if (filter_p()) next;
+
+    task = task_current()
+    if ($return == 0 && highwatermark_memlock < task->mm->total_vm << 12) { # PAGE_SHIFT
+      highwatermark_memlock = task->mm->total_vm << 12
+      print_syscall = 1
+    }
+  }
+
+/* RLIMIT_SIGPENDING */
+probe kernel.function("__sigqueue_alloc@kernel/signal.c").return
+  {
+    if (filter_p()) next;
+
+    task = task_current()
+    user = task->real_cred->user
+    if ($return == 0 && highwatermark_sigpending < atomic_read(&user->sigpending)) {
+      highwatermark_sigpending = atomic_read(&user->sigpending)
+      print_syscall = 1
+    }
+  }
+
+/* RLIMIT_MSGGQUEUE */
+probe kernel.function("mqueue_get_inode@ipc/mqueue.c").return
+  {
+    if (filter_p()) next;
+
+    task = task_current()
+    user = task->real_cred->user
+    if ($return == 0 && highwatermark_msgqueue < user->mq_bytes) {
+      highwatermark_msgqueue = user->mq_bytes
+      print_syscall = 1
+    }
+  }
+
+/* RLIMIT_NICE */
+probe kernel.function("set_user_nice@kernel/sched/core.c").return
+  {
+    if (filter_p()) next;
+
+    if (highwatermark_nice < $nice) {
+      highwatermark_nice = $nice
+      print_syscall = 1
+    }
+  }
+
+/* RLIMIT_RTPRIO */
+probe kernel.function("__sched_setscheduler@kernel/sched/core.c").return
+  {
+    if (filter_p()) next;
+
+    if (highwatermark_rtprio < $attr->sched_priority) {
+      highwatermark_rtprio = $attr->sched_priority
+      print_syscall = 1
+    }
+  }
+
+/* socket address families */
+probe kernel.function("__sock_create@net/socket.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      used_afs |= 1 << $family
+      print_syscall = 1
+    } else if ($return == 93) { # EPROTONOSUPPORT
+      missing_afs |= 1 << $family
+      print_syscall = 1
+    }
+  }
+
+/* mmap flags */
+probe kernel.function("do_mmap@mm/mmap.c").return
+  {
+    if (filter_p()) next;
+
+    if (($return >= 0 || $return < -1000) && ($flags & (2 | 4)) == (2 | 4)) { # PROT_WRITE | PROT_EXEC
+      no_memory_deny_write_execute = 1
+      print_syscall = 1
+    }
+  }
+
+/* path checks */
+probe kernel.function("security_path_mknod@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_path($dir)]++
+      written_paths[fullpath_struct_path($dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_path_mkdir@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_path($dir)]++
+      written_paths[fullpath_struct_path($dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_path_rmdir@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_path($dir)]++
+      written_paths[fullpath_struct_path($dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_path_unlink@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_path($dir)]++
+      written_paths[fullpath_struct_path($dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_path_symlink@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_path($dir)]++
+      written_paths[fullpath_struct_path($dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_path_link@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_path($new_dir)]++
+      written_paths[fullpath_struct_path($new_dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_path_rename@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_path($old_dir)]++
+      written_paths[fullpath_struct_path($old_dir)]++
+      accessed_paths[fullpath_struct_path($new_dir)]++
+      written_paths[fullpath_struct_path($new_dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_path_truncate@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_path($path)]++
+      written_paths[fullpath_struct_path($path)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_path_chmod@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_path($path)]++
+      written_paths[fullpath_struct_path($path)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_path_chown@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_path($path)]++
+      written_paths[fullpath_struct_path($path)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_path_chroot@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_path($path)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_create@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[inode_path($dir)]++
+      written_paths[inode_path($dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_link@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[inode_path($dir)]++
+      written_paths[inode_path($dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_unlink@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[inode_path($dir)]++
+      written_paths[inode_path($dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_symlink@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[inode_path($dir)]++
+      written_paths[inode_path($dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_mkdir@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[inode_path($dir)]++
+      written_paths[inode_path($dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_rmdir@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[inode_path($dir)]++
+      written_paths[inode_path($dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_mknod@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[inode_path($dir)]++
+      written_paths[inode_path($dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_rename@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[inode_path($old_dir)]++
+      written_paths[inode_path($old_dir)]++
+      accessed_paths[inode_path($new_dir)]++
+      written_paths[inode_path($new_dir)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_readlink@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0 && $dentry > 1000) {
+      printf("func %s dentry 0x%x\n", pp(), $dentry);
+      accessed_paths[d_path($dentry)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_follow_link@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0 && $dentry > 1000) {
+      printf("func %s dentry 0x%x inode 0x%x\n", pp(), $dentry, $inode);
+      accessed_paths[inode_path($inode)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_permission@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[inode_path($inode)]++
+      if ($mask & (0x00000002 | 0x00000008)) # MAY_WRITE | MAY_APPEND
+        written_paths[inode_path($inode)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_setattr@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0 && $dentry > 1000) {
+      printf("func %s dentry 0x%x\n", pp(), $dentry);
+      accessed_paths[d_path($dentry)]++
+      written_paths[d_path($dentry)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_getattr@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_path($path)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_setxattr@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0 && $dentry > 1000) {
+      printf("func %s dentry 0x%x\n", pp(), $dentry);
+      accessed_paths[d_path($dentry)]++
+      written_paths[d_path($dentry)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_getxattr@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0 && $dentry > 1000) {
+      printf("func %s dentry 0x%x\n", pp(), $dentry);
+      accessed_paths[d_path($dentry)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_removexattr@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0 && $dentry > 1000) {
+      printf("func %s dentry 0x%x\n", pp(), $dentry);
+      accessed_paths[d_path($dentry)]++
+      written_paths[d_path($dentry)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_getsecurity@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[inode_path($inode)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_setsecurity@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[inode_path($inode)]++
+      written_paths[inode_path($inode)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_listsecurity@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[inode_path($inode)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_getsecid@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    accessed_paths[inode_path($inode)]++
+    print_syscall = 1
+  }
+
+probe kernel.function("security_file_permission@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_file(task_current(), $file)]++
+      if ($mask & (0x00000002 | 0x00000008)) # MAY_WRITE | MAY_APPEND
+        written_paths[fullpath_struct_file(task_current(), $file)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_file_set_fowner@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    accessed_paths[fullpath_struct_file(task_current(), $file)]++
+    written_paths[fullpath_struct_file(task_current(), $file)]++
+    print_syscall = 1
+  }
+
+probe kernel.function("security_file_open@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[fullpath_struct_file(task_current(), $file)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_setsecctx@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0 && $dentry > 1000) {
+      printf("func %s dentry 0x%x\n", pp(), $dentry);
+      accessed_paths[d_path($dentry)]++
+      written_paths[d_path($dentry)]++
+      print_syscall = 1
+    }
+  }
+
+probe kernel.function("security_inode_getsecctx@security/security.c").return
+  {
+    if (filter_p()) next;
+
+    if ($return == 0) {
+      accessed_paths[inode_path($inode)]++
+      print_syscall = 1
+    }
+  }
+
+/* system call printing */
 probe nd_syscall.* 
   {
     # TODO: filter out apparently-nested syscalls (that are implemented
     # in terms of each other within the kernel); PR6762
 
     if (filter_p()) next;
+
+    used_syscalls[name]++
 
     thread_argstr[tid()]=argstr
     if (timestamp || elapsed_time)
@@ -51,8 +913,6 @@ probe nd_syscall.*.return
 
     report(name,thread_argstr[tid()],retstr)
   }
-
-
 
 function report(syscall_name, syscall_argstr, syscall_retstr)
   {
@@ -78,10 +938,203 @@ function report(syscall_name, syscall_argstr, syscall_retstr)
       prefix .= sprintf("%s[%d] ", execname(), tid())
     }
 
-    printf("%s%s(%s) = %s%s\n",
-           prefix, 
-           syscall_name, syscall_argstr, syscall_retstr,
-           suffix)
+    if (used_caps) {
+       suffix .= " [Capabilities=" . caps_to_str(used_caps) . "]"
+       all_used_caps |= used_caps
+       print_syscall = 1
+    }		       
+    if (missing_caps) {
+       suffix .= " missing [Capabilities=" . caps_to_str(missing_caps) . "]"
+       all_missing_caps |= missing_caps
+       print_syscall = 1
+    }		       
+
+    foreach ([type, dev] in accessed_devices) {
+      devs .= dev_to_str(type, dev, accessed_devices[type, dev]) . " "
+      if (has_devs == 0) {
+        has_devs = 1
+	print_syscall = 1
+	devs = " [DeviceAllow=" . devs
+      }
+      all_accessed_devices[type, dev] = accessed_devices[type, dev];
+    }
+    if (has_devs) {
+      devs .= "]"
+      suffix .= devs
+    }
+
+    if (used_afs) {
+      suffix .= " [RestrictAddressFamilies=" . afs_to_str(used_afs) . "]"
+      all_used_afs |= used_afs
+      print_syscall = 1
+    }		       
+    if (missing_afs) {
+      suffix .= " missing [RestrictAddressFamilies=" . afs_to_str(missing_afs) . "]"
+      all_missing_afs |= missing_afs
+      print_syscall = 1
+    }		       
+
+    if (no_memory_deny_write_execute) {
+      suffix .= " [MemoryDenyWriteExecute=false]"
+      all_memory_deny_write_execute = "false"
+    }		       
+
+    if (highwatermark_fsize > old_highwatermark_fsize) {
+      suffix .= sprintf(" [FSIZE %d -> %d]", old_highwatermark_fsize, highwatermark_fsize)
+      old_highwatermark_fsize = highwatermark_fsize
+    }
+    if (highwatermark_data > old_highwatermark_data) {
+      suffix .= sprintf(" [DATA %d -> %d]", old_highwatermark_data, highwatermark_data)
+      old_highwatermark_data = highwatermark_data
+    }
+    if (highwatermark_stack > old_highwatermark_stack) {
+      suffix .= sprintf(" [STACK %d -> %d]", old_highwatermark_stack, highwatermark_stack)
+      old_highwatermark_stack = highwatermark_stack
+    }
+    if (highwatermark_core > old_highwatermark_core) {
+      suffix .= sprintf(" [CORE %d -> %d]", old_highwatermark_core, highwatermark_core)
+      old_highwatermark_core = highwatermark_core
+    }
+    if (highwatermark_nofile > old_highwatermark_nofile) {
+      suffix .= sprintf(" [NOFILE %d -> %d]", old_highwatermark_nofile, highwatermark_nofile)
+      old_highwatermark_nofile = highwatermark_nofile
+    }
+    if (highwatermark_as > old_highwatermark_as) {
+      suffix .= sprintf(" [AS %d -> %d]", old_highwatermark_as, highwatermark_as)
+      old_highwatermark_as = highwatermark_as
+    }
+    if (highwatermark_nproc > old_highwatermark_nproc) {
+      suffix .= sprintf(" [NPROC %d -> %d]", old_highwatermark_nproc, highwatermark_nproc)
+      old_highwatermark_nproc = highwatermark_nproc
+    }
+    if (highwatermark_memlock > old_highwatermark_memlock) {
+      suffix .= sprintf(" [MEMLOCK %d -> %d]", old_highwatermark_memlock, highwatermark_memlock)
+      old_highwatermark_memlock = highwatermark_memlock
+    }
+    if (highwatermark_sigpending > old_highwatermark_sigpending) {
+      suffix .= sprintf(" [SIGPENDING %d -> %d]", old_highwatermark_sigpending, highwatermark_sigpending)
+      old_highwatermark_sigpending = highwatermark_sigpending
+    }
+    if (highwatermark_msgqueue > old_highwatermark_msgqueue) {
+      suffix .= sprintf(" [MSGQUEUE %d -> %d]", old_highwatermark_msgqueue, highwatermark_msgqueue)
+      old_highwatermark_msgqueue = highwatermark_msgqueue
+    }
+    if (highwatermark_nice > old_highwatermark_nice) {
+      suffix .= sprintf(" [NICE %d -> %d]", old_highwatermark_nice, highwatermark_nice)
+      old_highwatermark_nice = highwatermark_nice
+    }
+    if (highwatermark_rtprio > old_highwatermark_rtprio) {
+      suffix .= sprintf(" [RTPRIO %d -> %d]", old_highwatermark_rtprio, highwatermark_rtprio)
+      old_highwatermark_rtprio = highwatermark_rtprio
+    }
     
+    foreach ([path+] in written_paths) {
+      if (has_dirs == 0) {
+	has_dirs = 1
+	print_syscall = 1
+	dirs = " [ReadWriteDirectories="
+      }
+      dirs .= path . " "
+      all_written_paths[path]++
+      if (protect_system == "full" && path == "/etc") {
+        protect_system = "true"
+	suffix .= " [ProtectSystem=true]"
+      } else if (protect_system != "false" && path in protect_system_paths) {
+        protect_system = "false"
+	suffix .= " [ProtectSystem=false]"
+      }
+      if (protect_home != "false" && path in protect_home_paths) {
+        protect_home = "false"
+	suffix .= " [ProtectHome=false]"
+      }
+    }
+    if (has_dirs) {
+      dirs .= "]"
+      suffix .= dirs
+    }
+
+    has_dirs = 0
+    foreach ([path+] in accessed_paths) {
+      if (has_dirs == 0) {
+	has_dirs = 1
+	print_syscall = 1
+	dirs = " [InaccessibleDirectories=~"
+      }
+      dirs .= path . " "
+      all_accessed_paths[path]++
+      if (protect_home == "true" && path in protect_home_paths) {
+        protect_home = "read-only"
+	suffix .= " [ProtectHome=read-only]"
+      }
+    }
+    if (has_dirs) {
+      dirs .= "]"
+      suffix .= dirs
+    }
+
+    if (!only_capability_use || print_syscall)
+        printf("%s%s(%s) = %s%s\n",
+             prefix, 
+             syscall_name, syscall_argstr, syscall_retstr,
+	     suffix)
+
+    used_caps = 0
+    missing_caps = 0
+    used_afs = 0
+    print_syscall = 0
+    no_memory_deny_write_execute = 0
+    delete accessed_devices
+    delete accessed_paths
+    delete written_paths
+
     delete thread_argstr[tid()]
+  }
+
+probe end
+  {
+    printf("\nSummary:\n")
+    printf("CapabilityBoundingSet=%s\n", caps_to_str(all_used_caps))
+    if (all_missing_caps)
+	    printf("# Consider also possibly missing CapabilityBoundingSet=%s\n", caps_to_str(all_missing_caps))
+    printf("ProtectHome=%s\n", protect_home)
+    printf("ProtectSystem=%s\n", protect_system)
+    # No way to analyze if PrivateTmp could be used
+    printf("DevicePolicy=strict\n")
+    foreach ([type, dev+] in all_accessed_devices)
+      printf("DeviceAllow=%s\n", dev_to_str(type, dev, all_accessed_devices[type, dev]))
+    printf("# LimitFSIZE=%d\n", highwatermark_fsize)
+    printf("# LimitDATA=%d\n", highwatermark_data)
+    printf("# LimitSTACK=%d\n", highwatermark_stack)
+    printf("# LimitCORE=%d\n", highwatermark_core)
+    printf("# LimitNOFILE=%d\n", highwatermark_nofile)
+    printf("# LimitAS=%d\n", highwatermark_as)
+    printf("# LimitNPROC=%d\n", highwatermark_nproc)
+    printf("# LimitMEMLOCK=%d\n", highwatermark_memlock)
+    printf("# LimitSIGPENDING=%d\n", highwatermark_sigpending)
+    printf("# LimitMSGQUEUE=%d\n", highwatermark_msgqueue)
+    printf("# LimitNICE=%d\n", highwatermark_nice)
+    printf("# LimitRTPRIO=%d\n", highwatermark_rtprio)
+    printf("RestrictAddressFamilies=%s\n", afs_to_str(all_used_afs))
+    if (all_missing_afs)
+	    printf("# Consider also possibly missing RestrictAddressFamilies=%s\n", afs_to_str(all_missing_afs))
+    printf("MemoryDenyWriteExecute=%s\n", all_memory_deny_write_execute)
+    printf("SystemCallFilter=")
+    foreach ([syscall+] in used_syscalls)
+      if (syscall in syscalls_for_seccomp)
+        printf("%s ", syscalls_for_seccomp[syscall])
+      else
+        printf("%s ", syscall)
+
+    foreach ([path] in all_accessed_paths)
+      if (path in inaccessibles)
+        inaccessibles[path] = 1
+
+    foreach ([path+] in inaccessibles)
+      if (inaccessibles[path] == 0)
+        printf("\nInaccessibleDirectories=-%s", path)
+
+    printf("\nReadOnlyDirectories=/\nReadWriteDirectories=")
+    foreach ([path+] in all_written_paths)
+      printf("%s ", path)
+    printf("\n")
   }

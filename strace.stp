@@ -72,6 +72,8 @@ global protect_home_paths%
 global protect_home = "true"
 global private_tmp_paths%
 global private_tmp = "true"
+global private_network_syscalls%
+global private_network = "true"
 global print_syscall
 
 
@@ -191,6 +193,13 @@ probe begin
 
     private_tmp_paths["/tmp"] = 1
     private_tmp_paths["/var/tmp"] = 1
+
+    private_network_syscalls["accept"] = 1
+    private_network_syscalls["bind"] = 1
+    private_network_syscalls["listen"] = 1
+    private_network_syscalls["recv"] = 1
+    private_network_syscalls["send"] = 1
+    private_network_syscalls["socket"] = 1
 }
 
 
@@ -1082,6 +1091,13 @@ function report(syscall_name, syscall_argstr, syscall_retstr)
       suffix .= dirs
     }
 
+    # pessimistic, but safe: socket syscalls mean PrivateNetwork=false
+    if (private_network != "false" && syscall_name in private_network_syscalls) {
+      private_network = "false"
+      suffix .= " [PrivateNetwork=false]"
+      print_syscall = 1
+    }
+
     if (!only_capability_use || print_syscall)
         printf("%s%s(%s) = %s%s\n",
              prefix, 
@@ -1109,6 +1125,7 @@ probe end
     printf("ProtectHome=%s\n", protect_home)
     printf("ProtectSystem=%s\n", protect_system)
     printf("PrivateTmp=%s\n", private_tmp)
+    printf("PrivateNetwork=%s\n", private_network)
     printf("DevicePolicy=strict\n")
     foreach ([type, dev+] in all_accessed_devices)
       printf("DeviceAllow=%s\n", dev_to_str(type, dev, all_accessed_devices[type, dev]))

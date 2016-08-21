@@ -70,6 +70,8 @@ global protect_system_paths%
 global protect_system = "full"
 global protect_home_paths%
 global protect_home = "true"
+global private_tmp_paths%
+global private_tmp = "true"
 global print_syscall
 
 
@@ -186,7 +188,10 @@ probe begin
     protect_home_paths["/home"] = 1
     protect_home_paths["/root"] = 1
     protect_home_paths["/run/user"] = 1
- }
+
+    private_tmp_paths["/tmp"] = 1
+    private_tmp_paths["/var/tmp"] = 1
+}
 
 
 
@@ -1066,6 +1071,11 @@ function report(syscall_name, syscall_argstr, syscall_retstr)
         protect_home = "read-only"
 	suffix .= " [ProtectHome=read-only]"
       }
+      # pessimistic, but safe: any access to /tmp /var/tmp means PrivateTmp=false
+      if (private_tmp == "true" && path in private_tmp_paths) {
+        private_tmp = "false"
+	suffix .= " [PrivateTmp=false]"
+      }
     }
     if (has_dirs) {
       dirs .= "]"
@@ -1098,7 +1108,7 @@ probe end
 	    printf("# Consider also possibly missing CapabilityBoundingSet=%s\n", caps_to_str(all_missing_caps))
     printf("ProtectHome=%s\n", protect_home)
     printf("ProtectSystem=%s\n", protect_system)
-    # No way to analyze if PrivateTmp could be used
+    printf("PrivateTmp=%s\n", private_tmp)
     printf("DevicePolicy=strict\n")
     foreach ([type, dev+] in all_accessed_devices)
       printf("DeviceAllow=%s\n", dev_to_str(type, dev, all_accessed_devices[type, dev]))
